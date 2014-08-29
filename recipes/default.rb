@@ -1,5 +1,5 @@
 #
-# Cookbook Name:: asgard
+# Cookbook Name:: asgard-config
 # Recipe:: default
 #
 # Copyright 2014, Kevin Gilpin
@@ -17,16 +17,38 @@
 # limitations under the License.
 #
 
-if node['asgard']['aws_account_names'].kind_of?(Array)
-  aws_account_names = Hash[*node['asgard']['aws_account_names']]
-else
-  aws_account_names = node['asgard']['aws_account_names']
-end
+chef_gem 'rest-client'
+chef_gem 'netrc'
+
+require 'yaml'
+require 'netrc'
+
+conjur_conf = YAML.load(File.read('/etc/conjur.conf'))
+appliance_url = conjur_conf['appliance_url']
+OpenSSL::SSL::SSLContext::DEFAULT_CERT_STORE.add_file conjur_conf['cert_file']
+
+login, api_key = Netrc.read["#{appliance_url}/authn"]
+
+require 'rest-client'
+require 'json'
+require 'base64'
+
+ENV['RESTCLIENT_LOG'] = 'stderr'
+
+policy = node['conjur']['policy']
+
+token = JSON::parse(RestClient::Resource.new(appliance_url)["authn/users/#{CGI.escape login}/authenticate"].post api_key, content_type: 'text/plain')
+
+http_options = { headers: { authorization: "Token token=\"#{Base64.strict_encode64 token.to_json}\"" }, }
+
+aws_access_key_id = RestClient::Resource.new(appliance_url, http_options)[%Q{variables/#{CGI.escape "#{policy}/aws/access_key_id"}/value}].get
+aws_secret_access_key = RestClient::Resource.new(appliance_url, http_options)[%Q{variables/#{CGI.escape "#{policy}/aws/secret_access_key"}/value}].get
 
 directory "/etc/asgard"
 
 template "/etc/asgard/Config.groovy" do
   source "Config.groovy.erb"
-  variables aws_account_names: aws_account_names
-  notifies :restart, resources(service: "tomcat")
+  variables aws_access_key_id: aws_access_key_id, 
+    aws_secret_access_key: aws_secret_access_key
 end
+
