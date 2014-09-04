@@ -17,38 +17,22 @@
 # limitations under the License.
 #
 
-chef_gem 'rest-client'
-chef_gem 'netrc'
+require 'conjur/cli'
+require 'conjur/config'
+require 'conjur/authn'
 
-require 'yaml'
-require 'netrc'
+Conjur::Config.load [ '/etc/conjur.conf' ]
+Conjur::Config.apply
 
-conjur_conf = YAML.load(File.read('/etc/conjur.conf'))
-appliance_url = conjur_conf['appliance_url']
-OpenSSL::SSL::SSLContext::DEFAULT_CERT_STORE.add_file conjur_conf['cert_file']
+policy = node.conjur.policy
 
-login, api_key = Netrc.read["#{appliance_url}/authn"]
-
-require 'rest-client'
-require 'json'
-require 'base64'
-
-ENV['RESTCLIENT_LOG'] = 'stderr'
-
-policy = node['conjur']['policy']
-
-token = JSON::parse(RestClient::Resource.new(appliance_url)["authn/users/#{CGI.escape login}/authenticate"].post api_key, content_type: 'text/plain')
-
-http_options = { headers: { authorization: "Token token=\"#{Base64.strict_encode64 token.to_json}\"" }, }
-
-aws_access_key_id = RestClient::Resource.new(appliance_url, http_options)[%Q{variables/#{CGI.escape "#{policy}/aws/access_key_id"}/value}].get
-aws_secret_access_key = RestClient::Resource.new(appliance_url, http_options)[%Q{variables/#{CGI.escape "#{policy}/aws/secret_access_key"}/value}].get
+conjur = Conjur::Authn.connect nil, noask: true
 
 directory "/etc/asgard"
 
 template "/etc/asgard/Config.groovy" do
   source "Config.groovy.erb"
-  variables aws_access_key_id: aws_access_key_id, 
-    aws_secret_access_key: aws_secret_access_key
+  variables aws_access_key_id: conjur.variable("#{policy}/aws/access_key_id").value,
+    aws_secret_access_key: conjur.variable("#{policy}/aws/secret_access_key").value
 end
 
